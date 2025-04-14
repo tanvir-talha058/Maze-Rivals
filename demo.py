@@ -43,11 +43,6 @@ class CellType(Enum):
     RESOURCE_HIGH = 6
     EXIT = 7
 
-class Algorithm(Enum):
-    BFS = 0
-    DFS = 1
-    MINMAX = 2
-    
 class Game:
     def __init__(self):
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -62,9 +57,7 @@ class Game:
         self.player_score = 0
         self.ai_score = 0
         self.ai_path = []
-        self.ai_visited = []
         self.ai_eval_states = []  # For visualizing min-max evaluation
-        self.current_algorithm = Algorithm.BFS
         self.game_over = False
         
         # UI elements
@@ -181,63 +174,6 @@ class Game:
                     x, y = pos
                     self.grid[y][x] = resource_type.value
                     self.resources.append((pos, resource_type))
-
-    def bfs_pathfinding(self, start, target):
-        """BFS pathfinding from start to target"""
-        queue = deque([(start, [])])  # (position, path)
-        visited = set([start])
-        
-        while queue:
-            (x, y), path = queue.popleft()
-            
-            if (x, y) == target:
-                return path + [(x, y)]
-            
-            # Check adjacent cells (up, right, down, left)
-            directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-            for dx, dy in directions:
-                nx, ny = x + dx, y + dy
-                
-                if (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT and 
-                    self.grid[ny][nx] != CellType.WALL.value and
-                    (nx, ny) not in visited):
-                    queue.append(((nx, ny), path + [(x, y)]))
-                    visited.add((nx, ny))
-        
-        # Store visited cells for visualization
-        self.ai_visited = list(visited)
-        return None  # No path found
-    
-    def dfs_explore(self, start):
-        """DFS exploration from start position"""
-        stack = [(start, [])]  # (position, path)
-        visited = set([start])
-        
-        while stack:
-            (x, y), path = stack.pop()
-            
-            # Check for resources or exit
-            cell_value = self.grid[y][x]
-            if cell_value in [t.value for t in [CellType.RESOURCE_LOW, CellType.RESOURCE_MED, 
-                                               CellType.RESOURCE_HIGH, CellType.EXIT]]:
-                return path + [(x, y)]
-            
-            # Check adjacent cells (up, right, down, left)
-            directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-            random.shuffle(directions)  # Randomize direction order for more exploratory behavior
-            
-            for dx, dy in directions:
-                nx, ny = x + dx, y + dy
-                
-                if (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT and 
-                    self.grid[ny][nx] != CellType.WALL.value and
-                    (nx, ny) not in visited):
-                    stack.append(((nx, ny), path + [(x, y)]))
-                    visited.add((nx, ny))
-        
-        # Store visited cells for visualization
-        self.ai_visited = list(visited)
-        return None  # Nothing interesting found
     
     def evaluate_state(self, ai_pos, player_pos, resources, exit_pos):
         """Evaluate the game state for min-max algorithm"""
@@ -366,75 +302,56 @@ class Game:
             return min_eval, best_move
     
     def ai_move(self):
-        """AI decision making and movement"""
+        """AI decision making and movement using minimax"""
         # Reset visualization data
         self.ai_path = []
-        self.ai_visited = []
         self.ai_eval_states = []
         
-        if self.current_algorithm == Algorithm.BFS:
-            # First, try to find path to closest resource using BFS
-            resource_positions = [(x, y) for (x, y), _ in self.resources]
-            paths_to_resources = []
+        # Use min-max with alpha-beta pruning
+        _, best_move = self.minimax(
+            MAX_DEPTH, True, self.ai_pos, self.player_pos, 
+            self.resources, self.exit_pos, float('-inf'), float('inf')
+        )
+        
+        if best_move:
+            # Create a path for visualization
+            self.ai_path = [self.ai_pos, best_move]
             
-            # If exit is more valuable, consider it too
-            if self.exit_pos:
-                resource_positions.append(self.exit_pos)
+            # Move AI to best position
+            x, y = self.ai_pos
+            self.grid[y][x] = CellType.EMPTY.value
             
-            for target in resource_positions:
-                path = self.bfs_pathfinding(self.ai_pos, target)
-                if path:
-                    value = 5  # Default value
-                    # Determine resource value
-                    for (rx, ry), resource_type in self.resources:
-                        if (rx, ry) == target:
-                            if resource_type == CellType.RESOURCE_LOW:
-                                value = 5
-                            elif resource_type == CellType.RESOURCE_MED:
-                                value = 10
-                            else:  # RESOURCE_HIGH
-                                value = 20
-                    
-                    # Exit is highly valuable
-                    if target == self.exit_pos:
-                        value = 50
-                    
-                    # Value is inversely proportional to path length
-                    value_per_step = value / len(path)
-                    paths_to_resources.append((path, value_per_step))
+            new_x, new_y = best_move
+            cell_type = self.grid[new_y][new_x]
             
-            # If there are paths to resources, take the one with best value per step
-            if paths_to_resources:
-                paths_to_resources.sort(key=lambda x: x[1], reverse=True)  # Sort by value per step
-                best_path, _ = paths_to_resources[0]
-                self.ai_path = best_path
-                
-                # Move one step along the path
-                self.move_ai_along_path(best_path)
-                
-        elif self.current_algorithm == Algorithm.DFS:
-            # If DFS, explore to find resources
-            exploration_path = self.dfs_explore(self.ai_pos)
-            if exploration_path and len(exploration_path) > 1:
-                self.ai_path = exploration_path
-                self.move_ai_along_path(exploration_path)
-            else:
-                # Fallback to BFS if DFS didn't find anything
-                self.current_algorithm = Algorithm.BFS
-                self.ai_move()
-                
-        elif self.current_algorithm == Algorithm.MINMAX:
-            # Use min-max with alpha-beta pruning
-            _, best_move = self.minimax(
-                MAX_DEPTH, True, self.ai_pos, self.player_pos, 
-                self.resources, self.exit_pos, float('-inf'), float('inf')
-            )
+            # Collect resource if present
+            if cell_type == CellType.RESOURCE_LOW.value:
+                self.ai_score += 5
+                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
+                                 if pos != best_move]
+            elif cell_type == CellType.RESOURCE_MED.value:
+                self.ai_score += 10
+                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
+                                 if pos != best_move]
+            elif cell_type == CellType.RESOURCE_HIGH.value:
+                self.ai_score += 20
+                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
+                                 if pos != best_move]
+            elif cell_type == CellType.EXIT.value:
+                self.ai_score += 50
+                self.exit_pos = None
             
-            if best_move:
-                # Create a path for visualization
-                self.ai_path = [self.ai_pos, best_move]
+            # Update AI position
+            self.grid[new_y][new_x] = CellType.AI.value
+            self.ai_pos = best_move
+        else:
+            # Fallback if no valid move found
+            # Perform random valid move
+            valid_moves = self.get_valid_moves(self.ai_pos)
+            if valid_moves:
+                best_move = random.choice(valid_moves)
                 
-                # Move AI to best position
+                # Move AI to random position
                 x, y = self.ai_pos
                 self.grid[y][x] = CellType.EMPTY.value
                 
@@ -445,15 +362,15 @@ class Game:
                 if cell_type == CellType.RESOURCE_LOW.value:
                     self.ai_score += 5
                     self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                     if pos != best_move]
+                                    if pos != best_move]
                 elif cell_type == CellType.RESOURCE_MED.value:
                     self.ai_score += 10
                     self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                     if pos != best_move]
+                                    if pos != best_move]
                 elif cell_type == CellType.RESOURCE_HIGH.value:
                     self.ai_score += 20
                     self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                     if pos != best_move]
+                                    if pos != best_move]
                 elif cell_type == CellType.EXIT.value:
                     self.ai_score += 50
                     self.exit_pos = None
@@ -461,44 +378,6 @@ class Game:
                 # Update AI position
                 self.grid[new_y][new_x] = CellType.AI.value
                 self.ai_pos = best_move
-            else:
-                # Fallback to BFS if minimax didn't find a good move
-                self.current_algorithm = Algorithm.BFS
-                self.ai_move()
-    
-    def move_ai_along_path(self, path):
-        """Move AI one step along a path"""
-        if len(path) > 1:
-            # Clear current position
-            x, y = self.ai_pos
-            self.grid[y][x] = CellType.EMPTY.value
-            
-            # Move to new position
-            new_x, new_y = path[1]  # Next position in path
-            
-            # Check what's at the new position
-            cell_type = self.grid[new_y][new_x]
-            
-            # Collect resource if present
-            if cell_type == CellType.RESOURCE_LOW.value:
-                self.ai_score += 5
-                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                 if pos != (new_x, new_y)]
-            elif cell_type == CellType.RESOURCE_MED.value:
-                self.ai_score += 10
-                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                 if pos != (new_x, new_y)]
-            elif cell_type == CellType.RESOURCE_HIGH.value:
-                self.ai_score += 20
-                self.resources = [(pos, res_type) for (pos, res_type) in self.resources 
-                                 if pos != (new_x, new_y)]
-            elif cell_type == CellType.EXIT.value:
-                self.ai_score += 50
-                self.exit_pos = None
-            
-            # Update AI position
-            self.grid[new_y][new_x] = CellType.AI.value
-            self.ai_pos = (new_x, new_y)
     
     def handle_player_movement(self, dx, dy):
         """Handle player movement and resource collection"""
@@ -593,58 +472,28 @@ class Game:
                                    (x * CELL_SIZE + 5, y * CELL_SIZE + 5, 
                                     CELL_SIZE - 10, CELL_SIZE - 10))
         
-        # Draw AI's planned path if using BFS or DFS
-        if self.current_algorithm in [Algorithm.BFS, Algorithm.DFS]:
-            for i, (x, y) in enumerate(self.ai_path):
-                if i > 0:  # Skip starting position
-                    rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                    alpha_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
-                    alpha_surface.fill((255, 0, 0, 100))  # Semi-transparent red
-                    self.screen.blit(alpha_surface, rect)
-        
-        # Draw AI's visited cells for BFS or DFS
-        if self.current_algorithm in [Algorithm.BFS, Algorithm.DFS] and len(self.ai_visited) < 50:
-            for x, y in self.ai_visited:
-                if (x, y) != self.ai_pos and (x, y) not in self.ai_path:
-                    rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                    pygame.draw.rect(self.screen, LIGHT_BLUE, rect, 1)
+        # Draw AI's planned path
+        for i, (x, y) in enumerate(self.ai_path):
+            if i > 0:  # Skip starting position
+                rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                alpha_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+                alpha_surface.fill((255, 0, 0, 100))  # Semi-transparent red
+                self.screen.blit(alpha_surface, rect)
         
         # Draw min-max evaluation states
-        if self.current_algorithm == Algorithm.MINMAX:
-            alpha = 100  # Transparency level
-            for pos, _, depth, is_max in self.ai_eval_states:
-                if pos != self.ai_pos:
-                    x, y = pos
-                    rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                    color = (255, 192, 203, alpha) if is_max else (173, 216, 230, alpha)  # Pink for max, light blue for min
-                    alpha_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
-                    alpha_surface.fill(color)
-                    self.screen.blit(alpha_surface, rect)
+        alpha = 100  # Transparency level
+        for pos, _, depth, is_max in self.ai_eval_states:
+            if pos != self.ai_pos:
+                x, y = pos
+                rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                color = (255, 192, 203, alpha) if is_max else (173, 216, 230, alpha)  # Pink for max, light blue for min
+                alpha_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+                alpha_surface.fill(color)
+                self.screen.blit(alpha_surface, rect)
         
         # Draw UI
-        # Algorithm selection buttons
+        # Algorithm information area
         pygame.draw.rect(self.screen, DARK_GRAY, (0, SCREEN_HEIGHT - 60, SCREEN_WIDTH, 60))
-        
-        # BFS button
-        bfs_rect = pygame.Rect(10, SCREEN_HEIGHT - 50, 100, 40)
-        pygame.draw.rect(self.screen, BLUE if self.current_algorithm == Algorithm.BFS else GRAY, bfs_rect)
-        bfs_text = self.font.render("BFS", True, WHITE)
-        self.screen.blit(bfs_text, (bfs_rect.centerx - bfs_text.get_width() // 2, 
-                                   bfs_rect.centery - bfs_text.get_height() // 2))
-        
-        # DFS button
-        dfs_rect = pygame.Rect(120, SCREEN_HEIGHT - 50, 100, 40)
-        pygame.draw.rect(self.screen, BLUE if self.current_algorithm == Algorithm.DFS else GRAY, dfs_rect)
-        dfs_text = self.font.render("DFS", True, WHITE)
-        self.screen.blit(dfs_text, (dfs_rect.centerx - dfs_text.get_width() // 2, 
-                                   dfs_rect.centery - dfs_text.get_height() // 2))
-        
-        # Min-Max button
-        minmax_rect = pygame.Rect(230, SCREEN_HEIGHT - 50, 150, 40)
-        pygame.draw.rect(self.screen, BLUE if self.current_algorithm == Algorithm.MINMAX else GRAY, minmax_rect)
-        minmax_text = self.font.render("Min-Max", True, WHITE)
-        self.screen.blit(minmax_text, (minmax_rect.centerx - minmax_text.get_width() // 2, 
-                                      minmax_rect.centery - minmax_text.get_height() // 2))
         
         # Draw scores
         player_text = self.font.render(f"Player: {self.player_score}", True, GREEN)
@@ -653,15 +502,13 @@ class Game:
         self.screen.blit(ai_text, (SCREEN_WIDTH - ai_text.get_width() - 10, 10))
         
         # Draw algorithm description
-        if self.current_algorithm == Algorithm.BFS:
-            algo_desc = "BFS: Breadth-First Search (finds shortest paths)"
-        elif self.current_algorithm == Algorithm.DFS:
-            algo_desc = "DFS: Depth-First Search (explores unknown areas)"
-        else:
-            algo_desc = "Min-Max: Strategic decision making with alpha-beta pruning"
-        
+        algo_desc = "(Strategic decision making with ai Made by Tanvir " + str(MAX_DEPTH) + ")"
         algo_text = self.small_font.render(algo_desc, True, WHITE)
-        self.screen.blit(algo_text, (SCREEN_WIDTH // 2 - algo_text.get_width() // 2, SCREEN_HEIGHT - 20))
+        self.screen.blit(algo_text, (SCREEN_WIDTH // 2 - algo_text.get_width() // 2, SCREEN_HEIGHT - 40))
+        
+        # Draw controls information
+        controls_text = self.small_font.render("Use arrow keys to move. Press R to restart.", True, WHITE)
+        self.screen.blit(controls_text, (SCREEN_WIDTH // 2 - controls_text.get_width() // 2, SCREEN_HEIGHT - 20))
         
         # Check for game end
         if self.game_over:
@@ -689,21 +536,8 @@ class Game:
         
         pygame.display.flip()
     
-    def handle_click(self, pos):
-        """Handle mouse clicks"""
-        x, y = pos
-        
-        # Check if clicked on algorithm buttons
-        if SCREEN_HEIGHT - 50 <= y <= SCREEN_HEIGHT - 10:
-            if 10 <= x <= 110:  # BFS button
-                self.current_algorithm = Algorithm.BFS
-            elif 120 <= x <= 220:  # DFS button
-                self.current_algorithm = Algorithm.DFS
-            elif 230 <= x <= 380:  # Min-Max button
-                self.current_algorithm = Algorithm.MINMAX
-    
     def run(self):
-        """Main game loop"""
+        
         while self.running:
             self.clock.tick(FPS)
             
@@ -722,18 +556,14 @@ class Game:
                     elif event.key == pygame.K_LEFT:
                         self.handle_player_movement(-1, 0)
                     
-                    # Restart game
+                    # Restart 
                     elif event.key == pygame.K_r:
                         self.generate_maze()
                         self.player_score = 0
                         self.ai_score = 0
                         self.ai_path = []
-                        self.ai_visited = []
                         self.ai_eval_states = []
                         self.game_over = False
-                
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    self.handle_click(event.pos)
             
             self.draw()
         
@@ -741,4 +571,4 @@ class Game:
 
 if __name__ == "__main__":
     game = Game()
-    game.run()        
+    game.run()
